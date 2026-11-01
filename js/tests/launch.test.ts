@@ -122,6 +122,9 @@ describe("composable Playwright launch helpers", () => {
     expect(entry.buildLaunchOptions).toBeTypeOf("function");
     expect(entry.buildContextOptions).toBeTypeOf("function");
     expect(entry.humanizeBrowser).toBeTypeOf("function");
+    expect(entry.guardBrowser).toBeTypeOf("function");
+    expect(entry.licenseErrorFrom).toBeTypeOf("function");
+    expect(entry.licenseDenial).toBeTypeOf("function");
   });
 
   it("buildContextOptions returns Playwright context options without launching a browser", async () => {
@@ -200,8 +203,53 @@ describe("composable Playwright launch helpers", () => {
 
     expect(options.env).toBeDefined();
     expect(options.env!.CLOAKBROWSER_LICENSE_KEY).toBe("cb_test_key");
+    // Standalone call still gets a denial file for guardBrowser()
+    expect(options.env!.CLOAKBROWSER_LICENSE_STATUS_FILE).toMatch(/denials/);
     // launchOptions timeout still forwarded
     expect(options.timeout).toBe(1234);
+  });
+
+  it("guardBrowser turns a denial into CloakBrowserLicenseError", async () => {
+    const { guardBrowser, CloakBrowserLicenseError } = await import("../src/index.js");
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+
+    const denial = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cb-")), "d.json");
+    fs.writeFileSync(denial, "77");
+    const browser: any = {
+      newPage: async () => {
+        throw new Error("Target page, context or browser has been closed");
+      },
+    };
+    guardBrowser(browser, { env: { CLOAKBROWSER_LICENSE_STATUS_FILE: denial } });
+
+    expect(browser.__cloakDenialPath).toBe(denial);
+    await expect(browser.newPage()).rejects.toBeInstanceOf(CloakBrowserLicenseError);
+  });
+
+  it("licenseDenial checks the stashed denial file without a browser call", async () => {
+    const { licenseDenial, CloakBrowserLicenseError } = await import("../src/index.js");
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+
+    const denial = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cb-")), "d.json");
+    const ctx: any = {};
+    expect(licenseDenial(ctx)).toBeNull(); // nothing stashed
+    ctx.__cloakDenialPath = denial;
+    expect(licenseDenial(ctx)).toBeNull(); // no file yet
+    fs.writeFileSync(denial, "76");
+    expect(licenseDenial(ctx)).toBeInstanceOf(CloakBrowserLicenseError);
+    expect(licenseDenial(ctx)).toBeInstanceOf(CloakBrowserLicenseError); // cached after read
+  });
+
+  it("guardBrowser is a no-op without a license", async () => {
+    const { guardBrowser } = await import("../src/index.js");
+    const newPage = async () => "page";
+    const browser: any = { newPage };
+    guardBrowser(browser, { executablePath: "/fake/chrome" });
+    expect(browser.newPage).toBe(newPage);
   });
 
   it("buildLaunchOptions preserves custom env via launchOptions", async () => {

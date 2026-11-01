@@ -1392,6 +1392,7 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@pujitha24](https://github.com/pujitha24) — cloakserve WebSocket heartbeat for vanished clients
 - [@w21180239](https://github.com/w21180239) — Playwright-compatible `context.close(reason=...)`
 - [@alkaz-nodemaven](https://github.com/alkaz-nodemaven) — GeoIP private proxy address fix
+- [@mvanhorn](https://github.com/mvanhorn) — Python `build_launch_options()` for your own Playwright instance
 
 ## Star History
 

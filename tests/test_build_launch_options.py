@@ -83,6 +83,104 @@ def test_build_launch_options_threads_suppress_maximize():
     assert "--start-maximized" not in opts["args"]
 
 
+def test_guard_browser_installs_guard_from_options_env():
+    """guard_browser reads the denial path build_launch_options put in env."""
+    from cloakbrowser.browser import guard_browser
+    from cloakbrowser.license import LICENSE_STATUS_FILE_ENV
+
+    browser = MagicMock()
+    with patch("cloakbrowser.browser._install_license_guard") as mock_guard:
+        guard_browser(browser, {"env": {LICENSE_STATUS_FILE_ENV: "/tmp/d.json"}})
+
+    mock_guard.assert_called_once_with(browser, "/tmp/d.json")
+    assert browser._cloak_denial_path == "/tmp/d.json"
+
+
+def test_guard_browser_async_uses_async_guard():
+    from cloakbrowser.browser import guard_browser_async
+    from cloakbrowser.license import LICENSE_STATUS_FILE_ENV
+
+    browser = MagicMock()
+    with patch("cloakbrowser.browser._install_license_guard_async") as mock_guard:
+        guard_browser_async(browser, {"env": {LICENSE_STATUS_FILE_ENV: "/tmp/d.json"}})
+
+    mock_guard.assert_called_once_with(browser, "/tmp/d.json")
+
+
+def test_license_error_maps_launch_failure():
+    """A denial during launch (binary exit 76 in Playwright's launch log) maps to
+    CloakBrowserLicenseError; any other error maps to None."""
+    from cloakbrowser import license_error_from
+    from cloakbrowser.license import CloakBrowserLicenseError
+
+    denied = Exception(
+        "BrowserType.launch: Target page, context or browser has been closed\n"
+        "  - [pid=1] <process did exit: exitCode=76, signal=null>"
+    )
+    assert isinstance(license_error_from(denied), CloakBrowserLicenseError)
+    assert license_error_from(Exception("net::ERR_PROXY_CONNECTION_FAILED")) is None
+
+
+def test_license_error_from_falls_back_to_denial_file(tmp_path):
+    """No exit code in the text -> read the launch's denial file (JS/.NET parity)."""
+    from cloakbrowser import license_error_from
+    from cloakbrowser.license import LICENSE_STATUS_FILE_ENV, CloakBrowserLicenseError
+
+    closed = Exception("BrowserType.launch: Target page, context or browser has been closed")
+    opts = {"env": {LICENSE_STATUS_FILE_ENV: str(tmp_path / "d.json")}}
+    assert license_error_from(closed, opts) is None  # no file -> genuine error
+    (tmp_path / "d.json").write_text("76")
+    assert license_error_from(closed) is None  # no options -> text only
+    assert isinstance(license_error_from(closed, opts), CloakBrowserLicenseError)
+
+
+def test_license_denial_reads_stashed_path(tmp_path):
+    """license_denial checks without a browser call; repeat calls keep the answer."""
+    from cloakbrowser import license_denial
+    from cloakbrowser.license import CloakBrowserLicenseError
+
+    class Obj:
+        pass
+
+    ctx = Obj()
+    assert license_denial(ctx) is None  # nothing stashed -> no license in play
+    ctx._cloak_denial_path = str(tmp_path / "d.json")
+    assert license_denial(ctx) is None  # no file -> not denied
+    (tmp_path / "d.json").write_text("76")
+    assert isinstance(license_denial(ctx), CloakBrowserLicenseError)
+    assert isinstance(license_denial(ctx), CloakBrowserLicenseError)  # file consumed, cached
+
+
+def test_guard_browser_noop_without_license():
+    """No key -> no env/denial path -> nothing installed."""
+    from cloakbrowser.browser import guard_browser
+
+    with patch("cloakbrowser.browser._install_license_guard") as mock_guard:
+        guard_browser(MagicMock(), {"executable_path": "/fake/chrome"})
+        guard_browser(MagicMock(), {"env": {"FOO": "1"}})
+
+    mock_guard.assert_not_called()
+
+
+def test_guard_browser_raises_license_error_on_denial(tmp_path):
+    """End to end on a fake browser: a denial file turns the next call's
+    failure into CloakBrowserLicenseError."""
+    from cloakbrowser.browser import guard_browser
+    from cloakbrowser.license import LICENSE_STATUS_FILE_ENV, CloakBrowserLicenseError
+
+    class FakeBrowser:
+        def new_page(self):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    denial = tmp_path / "d.json"
+    denial.write_text("77")
+    browser = FakeBrowser()
+    guard_browser(browser, {"env": {LICENSE_STATUS_FILE_ENV: str(denial)}})
+
+    with pytest.raises(CloakBrowserLicenseError):
+        browser.new_page()
+
+
 def test_build_launch_options_removed_backend_raises():
     """Removed kwargs still fail before any launch side effects."""
     from cloakbrowser.browser import build_launch_options
@@ -185,11 +283,12 @@ def test_launch_delegates_to_build_launch_options_and_humanize_browser():
         browser_version="148.0.7778.215.4",
         release_channel=None,
         _suppress_maximize=True,
-        _status_file=ANY,
         timeout=1234,
     )
     pw.chromium.launch.assert_called_once_with(**launch_opts)
     mock_humanize.assert_called_once_with(browser, "careful", overrides)
+    # Proxy given but no Playwright "proxy" option -> it went as --proxy-server (#579).
+    browser._impl_obj.on.assert_called_once_with("context", ANY)
     assert result is browser
 
 
@@ -203,9 +302,11 @@ async def test_launch_async_delegates_to_build_launch_options():
         "headless": True,
         "args": ["--custom-flag"],
         "ignore_default_args": IGNORE_DEFAULT_ARGS,
+        "proxy": {"server": "http://proxy:8080"},
         "timeout": 1234,
     }
     browser = AsyncMock()
+    browser._impl_obj = MagicMock()
     pw = MagicMock()
     pw.chromium.launch = AsyncMock(return_value=browser)
     pw.stop = AsyncMock()
@@ -247,8 +348,9 @@ async def test_launch_async_delegates_to_build_launch_options():
         browser_version="148.0.7778.215.4",
         release_channel=None,
         _suppress_maximize=False,
-        _status_file=ANY,
         timeout=1234,
     )
     pw.chromium.launch.assert_awaited_once_with(**launch_opts)
+    # Proxy went through Playwright's own option -> no #579 warning hook.
+    browser._impl_obj.on.assert_not_called()
     assert result is browser

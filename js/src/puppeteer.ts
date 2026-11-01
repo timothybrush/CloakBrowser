@@ -151,6 +151,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     // Guarding the browser deeply covers newPage AND the context factories
     // (createBrowserContext) and every page/context they hand back — so a user
     // who creates their own context is covered too.
+    (browser as any).__cloakDenialPath = denialPath; // for licenseDenial()
     installLicenseGuard(browser, denialPath);
   }
   await applyPostLaunch(browser, options);
@@ -214,6 +215,7 @@ export async function launchPersistentContext(
 
   // Guard the browser deeply for a post-handshake denial (see launch()).
   if (denialPath) {
+    (browser as any).__cloakDenialPath = denialPath; // for licenseDenial()
     installLicenseGuard(browser, denialPath);
     // A persistent browser arrives with a page already open, so the user drives
     // pages()[0] directly and never calls newPage. Guard those existing pages

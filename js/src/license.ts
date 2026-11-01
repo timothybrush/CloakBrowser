@@ -248,6 +248,17 @@ function denialLicenseError(denialPath: string): CloakBrowserLicenseError | null
 }
 
 /**
+ * Why the license refused this browser/context (e.g. "session limit reached"),
+ * or null. Checks now, without a browser call: useful while waiting on something
+ * else, like a CDP endpoint. Works on anything launch(), launchContext(),
+ * launchPersistentContext() or guardBrowser() handed back. Safe to call repeatedly.
+ */
+export function licenseDenial(target: unknown): CloakBrowserLicenseError | null {
+  const denialPath = (target as any)?.__cloakDenialPath as string | undefined;
+  return denialPath ? denialLicenseError(denialPath) : null;
+}
+
+/**
  * Public, non-getter method names on `target` and its prototype chain — the
  * methods that can throw a TargetClosedError once the browser dies. Getters are
  * skipped so they are never triggered here; this covers every real method

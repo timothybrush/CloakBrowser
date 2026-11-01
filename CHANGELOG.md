@@ -6,6 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [Unreleased]
+
+- **[wrapper]** Launch with your own Playwright instance: `build_launch_options()` (JS `buildLaunchOptions()`, .NET `CloakLauncher.BuildLaunchOptionsAsync()`) returns the options `launch()` uses, so `pw.chromium.launch(**build_launch_options())` needs no copy of `launch()`. `humanize_browser()` / `humanize_browser_async()` apply the humanize layer to that browser. Python and .NET (JS had `buildLaunchOptions()` since 0.3.29) (#153, #255)
+- **[wrapper]** Clear license errors for browsers you launch yourself: `guard_browser()` (JS `guardBrowser()`, .NET `CloakLauncher.GuardBrowser()`) turns a license denial after launch, like a full session limit, into `CloakBrowserLicenseError` instead of a bare "Target closed" error, and `license_error_from(e, opts)` (JS `licenseErrorFrom()`, .NET `CloakLauncher.LicenseErrorFrom()`) does the same for a denial during launch. Python, JavaScript, and .NET
+- **[wrapper]** `license_denial(browser_or_context)` (JS `licenseDenial()`, .NET `LicenseDenial()` on the launch handles) reports whether the license refused a browser, without making a browser call. Works on everything the launch functions return, including Puppeteer browsers in JS. Python, JavaScript, and .NET
+
 ## [0.7.0] — 2026-11-01
 
 **Breaking: every launch now needs a license key.** A free key takes one email and gets the latest build (1 concurrent session). The old keyless v146 build is no longer downloaded. To keep running it without a key, stay on the 0.6 wrapper: `pip install "cloakbrowser<0.7"`, `npm install cloakbrowser@0.6`, `dotnet add package CloakBrowser --version 0.6.5`, or the Docker image `cloakhq/cloakbrowser:0.6.5`.

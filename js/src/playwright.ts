@@ -12,6 +12,7 @@ import { ensureBinary } from "./download.js";
 import { resolveProxyConfig, warnOnRequestClientUse } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
 import {
+  LICENSE_STATUS_FILE_ENV,
   buildLaunchEnv,
   installLicenseGuard,
   licenseErrorFrom,
@@ -83,6 +84,9 @@ export function buildContextOptions(
  *
  * Useful when integrating CloakBrowser with a custom Playwright build or another
  * wrapper that needs to call `chromium.launch()` itself.
+ *
+ * @param statusFile No longer needed: the denial file is created automatically.
+ *   Kept for compatibility.
  */
 export async function buildLaunchOptions(
   options: LaunchOptions = {},
@@ -104,6 +108,12 @@ export async function buildLaunchOptions(
 
   // Resolve env for the browser process (license key injection, if needed).
   const { env: userEnv, ...restLaunchOptions } = options.launchOptions ?? {};
+  // Standalone callers get a denial file too, so guardBrowser() can turn a
+  // license denial into a clear error. Minted after ensureBinary: with no key,
+  // its claim menu is what creates one.
+  if (statusFile === undefined && resolveLicenseKey(options.licenseKey)) {
+    statusFile = mintDenialFile();
+  }
   const launchEnv = buildLaunchEnv(
     options.licenseKey,
     userEnv as Record<string, string | undefined> | undefined,
@@ -120,6 +130,28 @@ export async function buildLaunchOptions(
     ...restLaunchOptions,
     ...envResult,
   } as PlaywrightLaunchOptions;
+}
+
+/**
+ * Make a license denial (e.g. over the session cap) on a browser you launched
+ * yourself throw CloakBrowserLicenseError instead of a bare "Target closed"
+ * error. Pass the options buildLaunchOptions() returned; call it before
+ * humanizeBrowser(). No-op when no license key was in play.
+ *
+ * A denial can also land during launch, before this runs. Map that one too:
+ * ```ts
+ * const opts = await buildLaunchOptions();
+ * const browser = await chromium.launch(opts).catch((e) => {
+ *   throw licenseErrorFrom(e) ?? e;
+ * });
+ * guardBrowser(browser, opts);
+ * ```
+ */
+export function guardBrowser(browser: Browser, launchOptions: PlaywrightLaunchOptions): void {
+  const denialPath = launchOptions.env?.[LICENSE_STATUS_FILE_ENV];
+  if (!denialPath) return;
+  (browser as any).__cloakDenialPath = denialPath;
+  installLicenseGuard(browser, denialPath);
 }
 
 /**
@@ -155,28 +187,19 @@ export async function humanizeBrowser(
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
-  // Only a path (nothing is written). Decided AFTER buildLaunchOptions: with no
-  // key, its ensureBinary runs the claim menu that creates one, and the guard must
-  // cover that first launch too (Python mints after ensure_binary for the same reason).
-  let denialPath = mintDenialFile();
+  // Mints the denial file (after ensureBinary, so a key the claim menu just
+  // created is covered too).
+  const launchOptions = await buildLaunchOptions(options);
   let browser: Browser;
-  let launchOptions: PlaywrightLaunchOptions;
   try {
-    launchOptions = await buildLaunchOptions(options, denialPath);
-    if (!resolveLicenseKey(options.licenseKey)) denialPath = undefined;
     browser = await chromium.launch(launchOptions);
   } catch (err) {
-    const lic = licenseErrorFrom(err, denialPath);
-    if (lic) throw lic;
-    throw err;
+    throw licenseErrorFrom(err, launchOptions.env?.[LICENSE_STATUS_FILE_ENV]) ?? err;
   }
   // Convert a post-handshake license denial into a clear error on first use.
-  // Installed before the wraps below so it sits closest to the real call. Stash
+  // Installed before the wraps below so it sits closest to the real call. Stashes
   // the path so launchContext() can guard its context too. Mirrors Python launch().
-  if (denialPath) {
-    (browser as any).__cloakDenialPath = denialPath;
-    installLicenseGuard(browser, denialPath);
-  }
+  guardBrowser(browser, launchOptions);
   // Proxy went to Chrome as --proxy-server, so Playwright's request client has no
   // proxy (#579). browser.newPage() and launchContext() both go through newContext.
   if (options.proxy && !launchOptions.proxy) {
@@ -262,12 +285,10 @@ export async function launchContext(
     }
   };
 
-  // browser.newContext above is already guarded by launch(); also guard the
-  // context's newPage for a denial that lands after the context is created.
+  // launch() guards browser.newContext deeply, so this context is already
+  // guarded; only store the path for licenseDenial().
   const denialPath = (browser as any).__cloakDenialPath as string | undefined;
-  if (denialPath) {
-    installLicenseGuard(context, denialPath);
-  }
+  if (denialPath) (context as any).__cloakDenialPath = denialPath;
 
   // Human-like behavioral patching
   if (options.humanize) {
@@ -310,54 +331,26 @@ export async function launchPersistentContext(
   options = resolveTimezone(options);
   const { chromium } = await import("playwright-core");
 
-  const binaryPath =
-    process.env.CLOAKBROWSER_BINARY_PATH ||
-    (await ensureBinary(
-      options.licenseKey,
-      options.browserVersion,
-      options.releaseChannel,
-    ));
-  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
-  let resolvedArgs = await resolveWebrtcArgs(options);
-  resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
-  resolvedArgs = persistentSeedArgs(options.userDataDir, options.stealthArgs, resolvedArgs);
-  const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
-  maybeWarnWindowsFonts(args);
-
-  seedWidevineHint(options.userDataDir, binaryPath);
-
-  // Resolve env for the browser process (license key injection, if needed).
-  const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
-  const { env: userEnv, ...restLaunchOptions } = options.launchOptions ?? {};
-  const launchEnv = buildLaunchEnv(
-    options.licenseKey,
-    userEnv as Record<string, string | undefined> | undefined,
-    denialPath,
-  );
-  const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
+  const launchOptions = await buildLaunchOptions({
+    ...options,
+    args: persistentSeedArgs(options.userDataDir, options.stealthArgs, options.args),
+  });
+  seedWidevineHint(options.userDataDir, launchOptions.executablePath!);
+  const denialPath = launchOptions.env?.[LICENSE_STATUS_FILE_ENV];
 
   // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
   // — NOT via Playwright context kwargs which use detectable CDP emulation.
   let context: BrowserContext;
   try {
     context = await chromium.launchPersistentContext(options.userDataDir, {
-      executablePath: binaryPath,
-      headless: options.headless ?? true,
-      args,
-      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-      ...(proxyOption ? { proxy: proxyOption } : {}),
       ...buildContextOptions(options),
-      ...restLaunchOptions,
-      ...envResult,
+      ...launchOptions,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err, denialPath);
-    if (lic) throw lic;
-    throw err;
+    throw licenseErrorFrom(err, denialPath) ?? err;
   }
 
-  if (proxyArgs.length) warnOnRequestClientUse(context);
+  if (options.proxy && !launchOptions.proxy) warnOnRequestClientUse(context);
 
   // Human-like behavioral patching. Applied BEFORE the license guard: the guard
   // stores its wrapper on the page/context object (it carries this launch's denial
@@ -375,6 +368,7 @@ export async function launchPersistentContext(
 
   // The persistent path hands back a context, so guard its newPage (see launch()).
   if (denialPath) {
+    (context as any).__cloakDenialPath = denialPath; // for licenseDenial()
     installLicenseGuard(context, denialPath);
     // A persistent context arrives with a page already open, so the user
     // navigates pages()[0] directly and never calls newPage. Guard the existing

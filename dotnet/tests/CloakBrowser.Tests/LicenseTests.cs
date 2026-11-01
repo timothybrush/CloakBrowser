@@ -1281,4 +1281,64 @@ public class LicenseTests : IDisposable
             () => Task.FromResult<object>("ok"), Path.Combine(_tmp, "absent.json"));
         Assert.Equal("ok", result);
     }
+
+    // GuardBrowser: the public hook for callers who launch with BuildLaunchOptionsAsync.
+    [Fact]
+    public async Task GuardBrowser_UsesDenialPathFromLaunchOptionsEnv()
+    {
+        var f = Path.Combine(_tmp, "d.json");
+        File.WriteAllText(f, "77");
+        var (raw, rec) = CloakBrowser.Tests.Wrappers.Fake.Of<Microsoft.Playwright.IBrowser>();
+        rec.On("NewPageAsync", _ => Task.FromException<Microsoft.Playwright.IPage>(
+            new Exception("Target page, context or browser has been closed")));
+        var opts = new Microsoft.Playwright.BrowserTypeLaunchOptions
+        {
+            Env = new Dictionary<string, string> { [License.LicenseStatusFileEnv] = f },
+        };
+
+        var guarded = CloakLauncher.GuardBrowser(raw, opts);
+
+        Assert.NotSame(raw, guarded);
+        await Assert.ThrowsAsync<CloakBrowserLicenseError>(() => guarded.NewPageAsync());
+    }
+
+    [Fact]
+    public void LicenseErrorFrom_ReadsDenialFileFromLaunchOptions()
+    {
+        var f = Path.Combine(_tmp, "d.json");
+        File.WriteAllText(f, "76");
+        var opts = new Microsoft.Playwright.BrowserTypeLaunchOptions
+        {
+            Env = new Dictionary<string, string> { [License.LicenseStatusFileEnv] = f },
+        };
+        var closed = new Exception("Target page, context or browser has been closed");
+        Assert.NotNull(CloakLauncher.LicenseErrorFrom(closed, opts));
+        Assert.Null(CloakLauncher.LicenseErrorFrom(closed, new Microsoft.Playwright.BrowserTypeLaunchOptions()));
+    }
+
+    [Fact]
+    public void LicenseDenial_ChecksDenialFileWithoutBrowserCall()
+    {
+        var f = Path.Combine(_tmp, "d.json");
+        var opts = new Microsoft.Playwright.BrowserTypeLaunchOptions
+        {
+            Env = new Dictionary<string, string> { [License.LicenseStatusFileEnv] = f },
+        };
+        Assert.Null(CloakLauncher.LicenseDenial(new Microsoft.Playwright.BrowserTypeLaunchOptions()));
+        Assert.Null(CloakLauncher.LicenseDenial(opts)); // no file yet
+        File.WriteAllText(f, "76");
+        Assert.NotNull(CloakLauncher.LicenseDenial(opts));
+        Assert.NotNull(CloakLauncher.LicenseDenial(opts)); // cached after read
+    }
+
+    [Fact]
+    public void GuardBrowser_NoLicenseReturnsSameBrowser()
+    {
+        var (raw, _) = CloakBrowser.Tests.Wrappers.Fake.Of<Microsoft.Playwright.IBrowser>();
+        Assert.Same(raw, CloakLauncher.GuardBrowser(raw, new Microsoft.Playwright.BrowserTypeLaunchOptions()));
+        Assert.Same(raw, CloakLauncher.GuardBrowser(raw, new Microsoft.Playwright.BrowserTypeLaunchOptions
+        {
+            Env = new Dictionary<string, string> { ["FOO"] = "1" },
+        }));
+    }
 }
