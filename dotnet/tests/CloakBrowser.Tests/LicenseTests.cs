@@ -1332,6 +1332,20 @@ public class LicenseTests : IDisposable
     }
 
     [Fact]
+    public async Task Guard_LeavesCloseAloneAfterDenial()
+    {
+        // Close in a finally block must clean up, not throw the license error.
+        var f = Path.Combine(_tmp, "d.json");
+        File.WriteAllText(f, "76");
+        var (raw, rec) = CloakBrowser.Tests.Wrappers.Fake.Of<Microsoft.Playwright.IBrowser>();
+        var guarded = (Microsoft.Playwright.IBrowser)LicenseGuard.Wrap(raw, f);
+
+        await guarded.CloseAsync();
+        Assert.True(rec.WasCalled("CloseAsync"));
+        await Assert.ThrowsAsync<CloakBrowserLicenseError>(() => guarded.NewPageAsync());
+    }
+
+    [Fact]
     public void GuardBrowser_NoLicenseReturnsSameBrowser()
     {
         var (raw, _) = CloakBrowser.Tests.Wrappers.Fake.Of<Microsoft.Playwright.IBrowser>();

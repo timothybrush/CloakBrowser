@@ -244,6 +244,31 @@ describe("composable Playwright launch helpers", () => {
     expect(licenseDenial(ctx)).toBeInstanceOf(CloakBrowserLicenseError); // cached after read
   });
 
+  it("guard leaves close() and isClosed() alone after a denial", async () => {
+    // Playwright's BrowserContext.close() calls page.isClosed() internally; guarding
+    // it made close() throw the license error and abort teardown.
+    const { installLicenseGuard } = await import("../src/license.js");
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+
+    const denial = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cb-")), "d.json");
+    fs.writeFileSync(denial, "76");
+    const page: any = { isClosed: () => false, close: async () => "closed", goto: async () => "ok" };
+    installLicenseGuard(page, denial);
+
+    expect(page.isClosed()).toBe(false);
+    await expect(page.close()).resolves.toBe("closed");
+    await expect(page.goto()).rejects.toThrow(/session limit/);
+
+    // Puppeteer: Browser.close() ends with disconnect().
+    const browser: any = { disconnect: async () => "gone", process: () => null, newPage: async () => ({}) };
+    installLicenseGuard(browser, denial);
+    await expect(browser.disconnect()).resolves.toBe("gone");
+    expect(browser.process()).toBeNull();
+    await expect(browser.newPage()).rejects.toThrow(/session limit/);
+  });
+
   it("guardBrowser is a no-op without a license", async () => {
     const { guardBrowser } = await import("../src/index.js");
     const newPage = async () => "page";

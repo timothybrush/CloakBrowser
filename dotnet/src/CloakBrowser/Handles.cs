@@ -270,6 +270,11 @@ internal class LicenseGuardProxy<T> : DispatchProxy, IGuardedProxy where T : cla
             return value;
         }
 
+        // Never guard teardown (mirrors the Python/JS skip of close): after a denial,
+        // close must still clean up, not throw the license error from a finally block.
+        if (targetMethod.Name is "CloseAsync" or "DisposeAsync")
+            return Forward(targetMethod, args);
+
         var returnType = targetMethod.ReturnType;
 
         if (returnType == typeof(Task))

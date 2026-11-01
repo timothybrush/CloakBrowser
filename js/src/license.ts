@@ -233,8 +233,11 @@ const GUARD_FACTORY_METHODS = [
 // surface is called INTERNALLY by playwright/puppeteer (e.g. emit('close')
 // during teardown), so throwing a license error from inside their own event
 // dispatch would crash the driver rather than surface cleanly to the user.
+// Teardown and state queries are skipped too: Playwright's BrowserContext.close()
+// calls page.isClosed() and Puppeteer's Browser.close() ends with disconnect();
+// guarding them made close() throw after a denial. process() is a state query.
 const GUARD_SKIP_METHODS = new Set([
-  "close",
+  "close", "isClosed", "disconnect", "process",
   "on", "off", "once", "emit", "addListener", "removeListener",
   "removeAllListeners", "listeners", "rawListeners", "listenerCount",
   "eventNames", "prependListener", "prependOnceListener",
